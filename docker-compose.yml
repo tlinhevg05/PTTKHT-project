@@ -1,0 +1,177 @@
+services:
+
+  # ──────────────────────────────────────────────────────────────
+  # Application — 3 replicas spread across 3 Swarm nodes
+  # ──────────────────────────────────────────────────────────────
+  app:
+    image: ${APP_IMAGE:?Set APP_IMAGE in .env or the deployment environment}
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_DATASOURCE_URL: ${DB_URL:?Set DB_URL in .env or the deployment environment}
+      SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:?Set DB_USERNAME in .env or the deployment environment}
+      SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env or the deployment environment}
+      SPRING_DATASOURCE_DRIVER_CLASS_NAME: org.postgresql.Driver
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_SHOW_SQL: "true"
+      SPRING_MAIL_HOST: smtp.gmail.com
+      SPRING_MAIL_PORT: "587"
+      SPRING_MAIL_USERNAME: ${MAIL_USERNAME:-}
+      SPRING_MAIL_PASSWORD: ${MAIL_PASSWORD:-}
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_AUTH: "true"
+      SPRING_MAIL_PROPERTIES_MAIL_SMTP_STARTTLS_ENABLE: "true"
+      SERVER_SERVLET_SESSION_PERSISTENT: "false"
+    deploy:
+      replicas: 3
+      restart_policy:
+        condition: on-failure
+      update_config:
+        parallelism: 1
+        delay: 10s
+    networks:
+      - monitoring
+
+  # ──────────────────────────────────────────────────────────────
+  # Prometheus — 1 instance, pinned to manager node
+  # Image: https://hub.docker.com/r/prom/prometheus
+  # ──────────────────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    configs:
+      - source: prometheus_config
+        target: /etc/prometheus/prometheus.yml
+    volumes:
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=15d"
+      - "--web.enable-lifecycle"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+    networks:
+      - monitoring
+
+  # ──────────────────────────────────────────────────────────────
+  # Node Exporter — HOST metrics (CPU, RAM, disk, network)
+  # Image: https://hub.docker.com/r/prom/node-exporter
+  # mode: global → 1 instance per node, runs on ALL 3 nodes
+  # ──────────────────────────────────────────────────────────────
+  node-exporter:
+    image: prom/node-exporter:latest
+    ports:
+      - target: 9100
+        published: 9100
+        mode: host        # host mode: each node exposes its own port directly
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - "--path.procfs=/host/proc"
+      - "--path.sysfs=/host/sys"
+      - "--path.rootfs=/rootfs"
+      - "--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)"
+    hostname: "{{.Node.Hostname}}"
+    deploy:
+      mode: global        # 1 replica on EACH Swarm node automatically
+      restart_policy:
+        condition: any
+    networks:
+      - monitoring
+
+  # ──────────────────────────────────────────────────────────────
+  # cAdvisor — CONTAINER metrics (per-container CPU, mem, net)
+  # Image: gcr.io/cadvisor/cadvisor
+  # mode: global → 1 instance per node, monitors ALL containers
+  # Note: `devices` is not supported in docker stack deploy.
+  #       cAdvisor will warn about /dev/kmsg but collects all
+  #       essential container metrics without it.
+  # ──────────────────────────────────────────────────────────────
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    ports:
+      - target: 8080
+        published: 8081
+        mode: host        # host mode: each node exposes its own port directly
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    privileged: true      # required for full container metrics
+    deploy:
+      mode: global        # 1 replica on EACH Swarm node automatically
+      restart_policy:
+        condition: any
+    networks:
+      - monitoring
+
+  # ──────────────────────────────────────────────────────────────
+  # Grafana — visualization (1 instance, pinned to manager node)
+  # Image: https://hub.docker.com/r/grafana/grafana
+  # ──────────────────────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD in .env or the deployment environment}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    configs:
+      - source: grafana_datasources
+        target: /etc/grafana/provisioning/datasources/prometheus.yml
+      - source: grafana_dashboards
+        target: /etc/grafana/provisioning/dashboards/dashboards.yml
+    volumes:
+      - grafana_data:/var/lib/grafana
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      restart_policy:
+        condition: any
+    networks:
+      - monitoring
+
+# ──────────────────────────────────────────────────────────────
+# Networks
+# ──────────────────────────────────────────────────────────────
+networks:
+  monitoring:
+    driver: overlay       # overlay spans all 3 Swarm nodes
+    attachable: true      # allows manual `docker run --network` for debugging
+
+# ──────────────────────────────────────────────────────────────
+# Configs (external = must be created before stack deploy)
+# Run:
+#   docker config create prometheus_config  ./monitoring/prometheus/prometheus.yml
+#   docker config create grafana_datasources ./monitoring/grafana/provisioning/datasources/prometheus.yml
+#   docker config create grafana_dashboards  ./monitoring/grafana/provisioning/dashboards/dashboards.yml
+# ──────────────────────────────────────────────────────────────
+configs:
+  prometheus_config:
+    external: true
+  grafana_datasources:
+    external: true
+  grafana_dashboards:
+    external: true
+
+# ──────────────────────────────────────────────────────────────
+# Volumes (created on the node where the service runs)
+# ──────────────────────────────────────────────────────────────
+volumes:
+  prometheus_data:
+  grafana_data:

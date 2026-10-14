@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Manage Service Requests</title>
+    <link rel="stylesheet" th:href="@{/css/style.css}">
+    <style>
+        .toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem; gap: 1rem; }
+        .staff-select { min-width: 220px; min-height: 78px; border: 1px solid var(--border); border-radius: 4px; padding: 0.4rem; }
+        .status-select { border: 1px solid var(--border); border-radius: 4px; padding: 0.45rem; }
+        .custom-select { position: relative; width: 200px; font-size: 0.85rem; }
+        .custom-select-btn { width: 100%; padding: 0.45rem 0.8rem; background: rgba(0,0,0,0.2); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+        .custom-select-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: #1e293b; border: 1px solid var(--border); border-radius: 4px; margin-top: 4px; max-height: 150px; overflow-y: auto; z-index: 10; display: none; padding: 0.5rem; box-shadow: 0 4px 12px rgba(0,0,0,0.5); }
+        .custom-select.active .custom-select-dropdown { display: block; }
+    </style>
+</head>
+<body class="dashboard-page">
+<nav class="navbar">
+    <div class="navbar__brand"><span>Manage Service Requests</span></div>
+    <div class="navbar__right">
+        <button class="btn-logout" onclick="window.location.href='/dashboard'"><span>Back to Dashboard</span></button>
+    </div>
+</nav>
+
+<main class="dashboard-content">
+    <div class="toolbar">
+        <div><h2>Service Catalog</h2><p>Manage fixed services available to owners.</p></div>
+        <button class="btn-login" style="width:auto;padding:.6rem 1rem" onclick="saveAmenity()">Add Service</button>
+    </div>
+    <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:.75rem;margin-bottom:1rem">
+        <input id="amenityName" placeholder="Service name">
+        <input id="amenityPrice" type="number" min="0" placeholder="Unit price">
+        <input id="amenityQuantity" type="number" min="0" placeholder="Quantity">
+        <label><input id="amenityActive" type="checkbox" checked> Active</label>
+    </div>
+    <div class="table-container" style="margin-bottom:2rem">
+        <table><thead><tr><th>Name</th><th>Unit price</th><th>Quantity</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody id="amenitiesBody"></tbody></table>
+    </div>
+    <div class="toolbar">
+        <div>
+            <h2>Service Requests</h2>
+            <p>Assign staff, create dynamic tasks, and update request status.</p>
+        </div>
+    </div>
+    <div class="table-container" style="overflow: visible;">
+        <table>
+            <thead>
+            <tr>
+                <th>Service</th>
+                <th>Apartment</th>
+                <th>Owner</th>
+                <th>Description</th>
+                <th>Status</th>
+                <th>Staff</th>
+                <th>Actions</th>
+            </tr>
+            </thead>
+            <tbody id="requestsBody"><tr><td colspan="7" style="text-align: center;">Loading...</td></tr></tbody>
+        </table>
+    </div>
+</main>
+
+<script>
+    let requests = [];
+    let staffs = [];
+    let amenities = [];
+
+    window.onload = async () => {
+        await fetchStaffs();
+        await fetchAmenities();
+        await fetchRequests();
+    };
+
+    async function fetchAmenities() {
+        const res = await fetch('/api/admin/amenities');
+        if (!res.ok) return;
+        amenities = await res.json();
+        document.getElementById('amenitiesBody').innerHTML = amenities.map(item => `
+            <tr><td>${item.name}</td><td>${Number(item.unitPrice).toLocaleString('vi-VN')} VND</td>
+            <td>${item.quantity}</td><td>${item.active ? 'Active' : 'Inactive'}</td>
+            <td><button class="btn-small btn-primary" onclick="editAmenity(${item.id})">Edit</button>
+            <button class="btn-small btn-danger" onclick="deleteAmenity(${item.id})">Delete</button></td></tr>`).join('');
+    }
+
+    async function saveAmenity(id = null) {
+        const body = {
+            name: document.getElementById('amenityName').value,
+            unitPrice: Number(document.getElementById('amenityPrice').value || 0),
+            quantity: Number(document.getElementById('amenityQuantity').value || 0),
+            active: document.getElementById('amenityActive').checked
+        };
+        const res = await fetch('/api/admin/amenities' + (id ? '/' + id : ''), {
+            method: id ? 'PUT' : 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+        });
+        if (!res.ok) return alert(await res.text());
+        document.getElementById('amenityName').value = '';
+        fetchAmenities();
+    }
+
+    function editAmenity(id) {
+        const item = amenities.find(value => value.id === id);
+        document.getElementById('amenityName').value = item.name;
+        document.getElementById('amenityPrice').value = item.unitPrice;
+        document.getElementById('amenityQuantity').value = item.quantity;
+        document.getElementById('amenityActive').checked = item.active;
+        const name = prompt('Service name', item.name);
+        if (name !== null) {
+            document.getElementById('amenityName').value = name;
+            saveAmenity(id);
+        }
+    }
+
+    async function deleteAmenity(id) {
+        if (!confirm('Delete this service?')) return;
+        const res = await fetch('/api/admin/amenities/' + id, {method:'DELETE'});
+        if (!res.ok) return alert(await res.text());
+        fetchAmenities();
+    }
+
+    async function fetchStaffs() {
+        const res = await fetch('/api/admin/accounts');
+        if (res.ok) {
+            const accounts = await res.json();
+            staffs = accounts.filter(acc => acc.role === 'STAFF');
+        }
+    }
+
+    async function fetchRequests() {
+        const res = await fetch('/api/admin/service-requests');
+        if (!res.ok) {
+            document.getElementById('requestsBody').innerHTML = '<tr><td colspan="7" style="text-align: center;">Failed to load requests.</td></tr>';
+            return;
+        }
+        requests = await res.json();
+        renderRequests();
+    }
+
+    function renderRequests() {
+        const tbody = document.getElementById('requestsBody');
+        if (requests.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align: center;">No requests found.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = requests.map(req => `
+            <tr>
+                <td style="font-weight: 600;">${req.serviceName}</td>
+                <td>${req.apartmentName || ''}<br><small>Floor ${req.apartmentFloor || '?'}</small></td>
+                <td>${req.ownerEmail || ''}</td>
+                <td>${req.description || ''}</td>
+                <td>
+                    <select id="status-${req.id}" class="status-select" onchange="updateStatus(${req.id})">
+                        ${['PENDING', 'ASSIGNED', 'DONE', 'REJECTED'].map(status => `<option value="${status}" ${req.status === status ? 'selected' : ''}>${status}</option>`).join('')}
+                    </select>
+                </td>
+                <td>
+                    <div class="custom-select" id="custom-select-${req.id}">
+                        <div class="custom-select-btn" onclick="toggleDropdown(${req.id})">
+                            <span id="select-text-${req.id}">${getStaffText(req.staffNames)}</span>
+                            <span style="font-size: 0.7rem;">▼</span>
+                        </div>
+                        <div class="custom-select-dropdown">
+                            ${staffs.map(staff => `
+                                <label style="display: block; margin-bottom: 0.4rem; cursor: pointer; display: flex; align-items: center; gap: 0.4rem;">
+                                    <input type="checkbox" name="staff-${req.id}" value="${staff.id}" ${(req.staffIds || []).includes(staff.id) ? 'checked' : ''} onchange="assignRequest(${req.id})">
+                                    ${staff.email}
+                                </label>
+                            `).join('')}
+                        </div>
+                    </div>
+                </td>
+                <td>
+                    <!-- Buttons are kept as fallback, but actions auto-trigger now -->
+                    <button class="btn-login" style="width: auto; padding: 0.45rem 0.8rem;" onclick="assignRequest(${req.id})">Assign</button>
+                    <button class="btn-login" style="width: auto; padding: 0.45rem 0.8rem; margin-top: 0.4rem;" onclick="updateStatus(${req.id})">Save Status</button>
+                </td>
+            </tr>
+        `).join('');
+    }
+
+    function getStaffText(staffNames) {
+        if (!staffNames || staffNames.length === 0) return 'Select Staff...';
+        if (staffNames.length === 1) return staffNames[0];
+        return staffNames.length + ' selected';
+    }
+
+    function toggleDropdown(id) {
+        document.getElementById('custom-select-' + id).classList.toggle('active');
+    }
+
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest('.custom-select')) {
+            document.querySelectorAll('.custom-select').forEach(el => el.classList.remove('active'));
+        }
+    });
+
+    async function assignRequest(id) {
+        const checkboxes = document.querySelectorAll(`input[name="staff-${id}"]:checked`);
+        const staffIds = Array.from(checkboxes).map(cb => parseInt(cb.value));
+        const res = await fetch('/api/admin/service-requests/' + id + '/assign', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ staffIds })
+        });
+        if (res.ok) {
+            fetchRequests();
+        } else {
+            alert('Failed to assign request: ' + await res.text());
+        }
+    }
+
+    async function updateStatus(id) {
+        const status = document.getElementById('status-' + id).value;
+        const res = await fetch('/api/admin/service-requests/' + id + '/status', {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status })
+        });
+        if (res.ok) {
+            fetchRequests();
+        } else {
+            alert('Failed to update status: ' + await res.text());
+        }
+    }
+</script>
+</body>
+</html>
